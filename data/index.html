@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control de Temperatura</title>
+    <script defer src="script.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>🔥 Control de Temperatura</h1>
+        <div class="status off" id="status">Apagado</div>
+        <p>Temperatura actual: <span id="tempValue">--</span> °C</p>
+        <label for="setpoint">Setpoint:</label>
+        <input type="number" id="setpoint" step="1" min="0" max="300" value="50" readonly>
+        <input type="range" id="tempSlider" min="0" max="300" value="50" />
+        <button class="button" onclick="setTemperature()">Establecer Temperatura</button>
+        <button class="button" onclick="togglePower()">Encender/Apagar</button>
+    </div>
+</body>
+</html>
