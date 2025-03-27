@@ -1,24 +1,32 @@
 
-#include <Arduino.h>
-#include <SPIFFS.h>
-#include <max6675.h>
-#include <U8g2lib.h>
+#include <Arduino.h>                      //libreria general arduino
+#include <SPIFFS.h>                       //particiones SPIFFS
+#include <max6675.h>                      //Manejo de la termocupla
+#include <U8g2lib.h>                      //Manejo de la pantalla OLED
 #include <Wire.h>
-#include <PID_v1.h>
-#include <ESPAsyncWebServer.h>
-#include <ESPAsyncWiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
-#include <ArduinoJson.h>
+#include <PID_v1.h>                       //Algoritmo de control PID
+#include <ESPAsyncWebServer.h>            //servidor WEB
+#include <ESPAsyncWiFiManager.h>          //Wifi mannager https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include <ArduinoJson.h>                  //Manejo de datos Json
 #include <Preferences.h>                  //permite guardar el estado de variables luego de un reinicio
+#include <ESP32Encoder.h>                 //Encoder
+
 
 #define SSR_PIN 2 
-#define PERIOD_MS 10000
+#define PERIOD_MS 5000
+#define BOTON_PIN 17
 double pulseTime=10;
 int thermoDO = 19;
 int thermoCS = 23;
 int thermoCLK = 5;
-int sampleTime= 500000;
+int sampleTime= 5000000;
 bool onState = true;
 double error;
+
+
+//Encoder
+
+ESP32Encoder encoder;
 
 //Objeto que salva las preferencias
 
@@ -38,32 +46,28 @@ DNSServer dns;
 // Variables PID
 double tempSetpointCelcius = 100.0;   // Temperatura deseada (°C)
 double tempReadCelcius = 0, output = 0;
-//double Kp = 0.4 , Ki = 0.01, Kd = 0.0;   funciona sin demasiado overshott pero muy lento
-
-double Kp = 3 , Ki = 0, Kd = 0.0;   //100 grados
+//double Kp = 0.4 , Ki = 0.01, Kd = 2000.0;   funciona sin demasiado overshott pero muy lento
+double Kp = 3 , Ki = 0, Kd = 0;   //100 grados
 PID myPID(&tempReadCelcius, &output, &tempSetpointCelcius, Kp, Ki, Kd,DIRECT);
-
 
 
 // Configurar e0-l temporizador del controlador
 hw_timer_t *timer = NULL;
 volatile bool pidFlag = false;
-/* Constructor */
+
+/* Constructor Termocupla*/
 MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
-/* Constructor */
+
+/* Constructor  Pantalla */
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0,U8X8_PIN_NONE,/* SCL=*/22,/* SDA=*/21);
 
 
 // put function declarations here:
 void printScreen(double ,double);                       // PRINT SCREEN
-
 void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
-
 void sendJson();
 void sendJsonTemp();
-
 void parseJsonString(const String &jsonString);
-
 void restartPID();
 void errorPID();
 
@@ -122,7 +126,10 @@ server.begin();
 //****************************************************************** 
 // SSR OUTPUT
 pinMode(SSR_PIN, OUTPUT); //output pin
-//****************************************************************** 
+//******************************************************************
+// ENCODER BUTTON
+pinMode(BOTON_PIN, PULLUP);
+//******************************************************************
 // PID
 myPID.SetMode(AUTOMATIC);
 myPID.SetOutputLimits(0,1000); // Limita la salida entre 0 y 1000
@@ -131,13 +138,15 @@ myPID.SetOutputLimits(0,1000); // Limita la salida entre 0 y 1000
 Serial.println("Temperature controller");
 // wait for MAX chip to stabilize
 delay(500);
-
-
 // Configurar temporizador (sampletime)
-   timer = timerBegin(0, 80, true);  // Timer 0, prescaler 80 → 1MHz
-   timerAttachInterrupt(timer, &onTimer, true);
-   timerAlarmWrite(timer, sampleTime, true); // 1000000us = 1000ms
-   timerAlarmEnable(timer);
+timer = timerBegin(0, 80, true);  // Timer 0, prescaler 80 → 1MHz
+timerAttachInterrupt(timer, &onTimer, true);
+timerAlarmWrite(timer, sampleTime, true); // 1000000us = 1000ms
+timerAlarmEnable(timer);
+//Encoder
+encoder.attachHalfQuad(16, 4);
+encoder.setCount(tempSetpointCelcius);
+
 
 }
 
@@ -145,21 +154,16 @@ void loop() {
 if (pidFlag) {
     pidFlag = false;  // Reset flag
 
-
-     // Leer temperatura y calcular PID
-    tempReadCelcius =  thermocouple.readCelsius();
-    
-
-
     if (tempSetpointCelcius<75){
-      Kp=1;
-      Ki=0.05;
+      Kp=1.35;//2.7;
+      Ki=0.7;
     }
     if (tempSetpointCelcius>=75){
-      Kp=3;
-      Ki=0.1;
+      Kp=1.5;//3;
+      Ki=1;
     }
-
+     // Leer temperatura y calcular PID
+    tempReadCelcius =  thermocouple.readCelsius();
     errorPID();
     if ((abs(error))<=15)
       {
@@ -171,37 +175,63 @@ if (pidFlag) {
         myPID.SetTunings(Kp, 0, Kd);            // muy alejado del setpoin, deshabilitamos el término integral
         Serial.println("Ki deshabilitado" );
       }
-    Serial.println("Ki:"+ String(Ki));
-    myPID.Compute();
-    sendJsonTemp();
-
-
-
-    //Serial.println("Lectura C = "+ String(tempReadCelcius));
-    Serial.println("Setpoint = "+ String(tempSetpointCelcius));
-    Serial.println("Kp = "+ String(Kp));
-    Serial.println("Output = "+ String(output));
-    Serial.println("PulseTime = "+ String(pulseTime));
-    Serial.println("PulseDuration = "+ String(pulseDuration));
-    Serial.println("Error: "+String(error));
-    //Serial.println("currentMillis - previousMillis = "+ String((currentMillis - previousMillis)));
     
-    Serial.println("");
-    
-    printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN     
+  myPID.Compute();
+
+  pulseDuration = pulseTime * output;
+  previousMillis=millis();  // Reiniciar ciclo
+  if (output!=0){
+  digitalWrite(SSR_PIN, HIGH);  // Encender SSR
+  }
+  printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN  
+  sendJsonTemp();
+  //Serial.println("Lectura C = "+ String(tempReadCelcius));
+  Serial.println("Ki:"+ String(Ki));
+  Serial.println("Setpoint = "+ String(tempSetpointCelcius));
+  Serial.println("Kp = "+ String(Kp));
+  Serial.println("Output = "+ String(output));
+  Serial.println("PulseTime = "+ String(pulseTime));
+  Serial.println("Error: "+String(error));
+  Serial.println("PulseDuration = "+ String(pulseDuration));
+  Serial.println("");
+  //Serial.println("currentMillis - previousMillis = "+ String((currentMillis - previousMillis)));      
 }
 
- // Calcular duración del pulso (entre 0 y PERIOD_MS)
- pulseDuration = pulseTime * output;  
+// Calcular duración del pulso (entre 0 y PERIOD_MS)
 
  // Generar el pulso con millis()
- if (currentMillis - previousMillis >= PERIOD_MS) {
-     previousMillis=millis();  // Reiniciar ciclo
-     digitalWrite(SSR_PIN, HIGH);  // Encender SSR
- }
+//if (currentMillis - previousMillis >= PERIOD_MS) {
+  //pulseDuration = pulseTime * output;
+  //previousMillis=millis();  // Reiniciar ciclo
+  //if (output!=0){
+  //digitalWrite(SSR_PIN, HIGH);  // Encender SSR
+  //printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN
+  
+//  }
+  //Serial.println("PulseDuration = "+ String(pulseDuration));
+  
+
 currentMillis=millis();
 if ((currentMillis - previousMillis) >= pulseDuration) {
   digitalWrite(SSR_PIN, LOW);  // Apagar SSR
+  printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN
+}
+
+
+// ENCODER
+
+if (encoder.getCount()<0){
+  encoder.setCount(0);
+}
+
+if (encoder.getCount()>300){
+  encoder.setCount(300);
+}
+
+if(encoder.getCount()!=tempSetpointCelcius){
+  tempSetpointCelcius=encoder.getCount();
+  printScreen(tempReadCelcius,tempSetpointCelcius);
+  sendJsonTemp(); 
 }
 
 }
@@ -271,6 +301,7 @@ void sendJson() {
 void sendJsonTemp() {
   JsonDocument doc;
   doc["temp"] = tempReadCelcius; // lectura de temperatura
+  doc["setpoint"]=tempSetpointCelcius;  //lectura de setpoint
   String jsonStr;
   serializeJson(doc, jsonStr);
   ws.textAll(jsonStr); // Enviar a todos los clientes conectados
