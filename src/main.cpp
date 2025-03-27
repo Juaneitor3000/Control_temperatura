@@ -125,7 +125,7 @@ pinMode(SSR_PIN, OUTPUT); //output pin
 //****************************************************************** 
 // PID
 myPID.SetMode(AUTOMATIC);
-myPID.SetOutputLimits(0,1000); // Limita la salida entre 0 y 255
+myPID.SetOutputLimits(0,1000); // Limita la salida entre 0 y 1000
 //****************************************************************** 
 // PID
 Serial.println("Temperature controller");
@@ -153,7 +153,7 @@ if (pidFlag) {
 
     if (tempSetpointCelcius<75){
       Kp=1;
-      Ki=0.03;
+      Ki=0.05;
     }
     if (tempSetpointCelcius>=75){
       Kp=3;
