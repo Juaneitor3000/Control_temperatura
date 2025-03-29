@@ -44,7 +44,7 @@ DNSServer dns;
 
 
 // Variables PID
-double tempSetpointCelcius = 100.0;   // Temperatura deseada (°C)
+double tempSetpointCelcius = 40.0;   // Temperatura deseada (°C)
 double tempReadCelcius = 0, output = 0;
 //double Kp = 0.4 , Ki = 0.01, Kd = 2000.0;   funciona sin demasiado overshott pero muy lento
 double Kp = 3 , Ki = 0, Kd = 0;   //100 grados
@@ -70,6 +70,9 @@ void sendJsonTemp();
 void parseJsonString(const String &jsonString);
 void restartPID();
 void errorPID();
+void apagarPID();
+void encenderPID();
+void printScreenIntro();
 
 
 // Interrupción del Timer (Cada 500ms)
@@ -88,17 +91,20 @@ Serial.println("SERIAL PORT TEST:Temperature controller");
 //****************************************************************** 
 //RESTORE PREFERENCES
 preferences.begin("config", false);
-tempSetpointCelcius = preferences.getDouble("tempSetpoint", 50);
+tempSetpointCelcius = preferences.getDouble("tempSetpoint", 40);
 preferences.end();
 //****************************************************************** 
 //SCREEN
 u8g2.begin();        //Screen Init
+printScreenIntro();
+delay (1500);
 Serial.println("SCREEN STARTED");
 //******************************************************************
 // WEBSERVER and WIFI MANAGER
 AsyncWiFiManager wifiManager(&server,&dns);
 //first parameter is name of access point, second is the password
 wifiManager.autoConnect("AutoConnectAP");
+
 //****************************************************************** 
 //FILESYSTEM
 if (!SPIFFS.begin(true)) {
@@ -128,7 +134,7 @@ server.begin();
 pinMode(SSR_PIN, OUTPUT); //output pin
 //******************************************************************
 // ENCODER BUTTON
-pinMode(BOTON_PIN, PULLUP);
+pinMode(BOTON_PIN, INPUT);
 //******************************************************************
 // PID
 myPID.SetMode(AUTOMATIC);
@@ -162,6 +168,10 @@ if (pidFlag) {
       Kp=1.5;//3;
       Ki=1;
     }
+    if (tempSetpointCelcius>=220){
+      Kp=10;//3;
+      Ki=12;
+    }
      // Leer temperatura y calcular PID
     tempReadCelcius =  thermocouple.readCelsius();
     errorPID();
@@ -177,25 +187,40 @@ if (pidFlag) {
       }
     
   myPID.Compute();
-
   pulseDuration = pulseTime * output;
+  Serial.println("Calculado PID y duracion del pulso");
   previousMillis=millis();  // Reiniciar ciclo
   if (output!=0){
   digitalWrite(SSR_PIN, HIGH);  // Encender SSR
   }
+
+
   printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN  
-  sendJsonTemp();
-  //Serial.println("Lectura C = "+ String(tempReadCelcius));
-  Serial.println("Ki:"+ String(Ki));
+  sendJson();
   Serial.println("Setpoint = "+ String(tempSetpointCelcius));
-  Serial.println("Kp = "+ String(Kp));
-  Serial.println("Output = "+ String(output));
+  Serial.println("Lectura C = "+ String(tempReadCelcius));
   Serial.println("PulseTime = "+ String(pulseTime));
-  Serial.println("Error: "+String(error));
   Serial.println("PulseDuration = "+ String(pulseDuration));
-  Serial.println("");
-  //Serial.println("currentMillis - previousMillis = "+ String((currentMillis - previousMillis)));      
-}
+  Serial.println("Ki = "+ String(Ki));
+  Serial.println("Kp = "+ String(Kp));
+  Serial.println("Kd = "+ String(Kd));
+
+  Serial.println("");    
+  if (digitalRead(BOTON_PIN)==LOW){
+    if (myPID.GetMode()==AUTOMATIC){
+      apagarPID();
+      printScreen(tempReadCelcius,tempSetpointCelcius);
+      Serial.print("Boton presionado, apagando PID.");
+      return;
+    }
+    else if (myPID.GetMode()==MANUAL) {
+      encenderPID();
+      printScreen(tempReadCelcius,tempSetpointCelcius);
+      Serial.print("Boton presionado, encendido PID.");
+    }
+  }
+ 
+} // FIN DE LA INTERRUPCION
 
 // Calcular duración del pulso (entre 0 y PERIOD_MS)
 
@@ -212,9 +237,12 @@ if (pidFlag) {
   
 
 currentMillis=millis();
+
 if ((currentMillis - previousMillis) >= pulseDuration) {
-  digitalWrite(SSR_PIN, LOW);  // Apagar SSR
-  printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN
+  if (digitalRead(SSR_PIN)){
+    digitalWrite(SSR_PIN, LOW);  // Apagar SSR
+    printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN
+  }
 }
 
 
@@ -224,14 +252,15 @@ if (encoder.getCount()<0){
   encoder.setCount(0);
 }
 
-if (encoder.getCount()>300){
-  encoder.setCount(300);
+if (encoder.getCount()>260){
+  encoder.setCount(260);
 }
 
 if(encoder.getCount()!=tempSetpointCelcius){
   tempSetpointCelcius=encoder.getCount();
+  restartPID();
   printScreen(tempReadCelcius,tempSetpointCelcius);
-  sendJsonTemp(); 
+  sendJson(); 
 }
 
 }
@@ -239,35 +268,42 @@ if(encoder.getCount()!=tempSetpointCelcius){
 // put function definitions here:
 
 void printScreen(double tempRead,double tempSetpoint){
-
+  
   static const unsigned char image_output_state[] = {0x38,0x00,0x44,0x40,0xd4,0xa0,0x54,0x40,0xd4,0x1c,0x54,0x06,0xd4,0x02,0x54,0x02,0x54,0x06,0x92,0x1c,0x39,0x01,0x75,0x01,0x7d,0x01,0x39,0x01,0x82,0x00,0x7c,0x00};
+  Serial.println("Imprimiendo pantalla OLED");
+  Serial.println(WiFi.RSSI());
 
   u8g2.clearBuffer();
   u8g2.setFontMode(1);
   u8g2.setBitmapMode(1);
-  u8g2.setFont(u8g2_font_6x12_tr);
-  u8g2.drawStr(1, 8, "objetivo:");
-  u8g2.drawStr(2, 41, "Temperatura:");
-  u8g2.setFont(u8g2_font_profont29_tr);
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(0, 21, "Setpoint:");
+  u8g2.drawStr(0, 47, "Temp:");
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(5, 12,WiFi.localIP().toString().c_str());
+  u8g2.drawStr(5, 6,WiFi.SSID().c_str());
+  u8g2.setFont(u8g2_font_profont22_tr);
   char buffer[10];
   sprintf(buffer,"%.2f C",tempRead);  // Formateamos la cadena, mostrando 1 decimal
-  u8g2.drawStr(0, 63, buffer);
+  u8g2.drawStr(0, 64, buffer);
   sprintf(buffer,"%.0f C",tempSetpoint);  // Formateamos la cadena, mostrando 1 decimal
-  u8g2.drawStr(0, 30, buffer);
-
+  u8g2.drawStr(0, 38, buffer);
+  
 
   //dibuja el simbolo de "calentando" , estado de la salida
   if (digitalRead(SSR_PIN)){
   static const unsigned char image_output_state[] = {0x38,0x00,0x44,0x40,0xd4,0xa0,0x54,0x40,0xd4,0x1c,0x54,0x06,0xd4,0x02,0x54,0x02,0x54,0x06,0x92,0x1c,0x39,0x01,0x75,0x01,0x7d,0x01,0x39,0x01,0x82,0x00,0x7c,0x00};
-  u8g2.drawXBM(112, 0, 16, 16, image_output_state);
+  u8g2.drawXBM(112, 23, 16, 16, image_output_state);
   }
   //dibuja el simbolo de "encendido" , si el PID esta operatico
   if (onState){
   static const unsigned char image_device_power_button_bits[] = {0x80,0x00,0x80,0x00,0x98,0x0c,0xa4,0x12,0x92,0x24,0x8a,0x28,0x85,0x50,0x05,0x50,0x05,0x50,0x05,0x50,0x05,0x50,0x0a,0x28,0x12,0x24,0xe4,0x13,0x18,0x0c,0xe0,0x03};
-  u8g2.drawXBM(92, 0, 15, 16, image_device_power_button_bits);
+  u8g2.drawXBM(111, 48, 15, 16, image_device_power_button_bits);
   } 
 
-  u8g2.sendBuffer();
+static const unsigned char image_download_2_bits[] = {0x80,0x0f,0x00,0x60,0x30,0x00,0x18,0xc0,0x00,0x84,0x0f,0x01,0x62,0x30,0x02,0x11,0x40,0x04,0x08,0x87,0x00,0xc4,0x18,0x01,0x20,0x20,0x00,0x10,0x42,0x00,0x80,0x0d,0x00,0x40,0x10,0x00,0x00,0x02,0x00,0x00,0x05,0x00,0x00,0x02,0x00,0x00,0x00,0x00};
+u8g2.drawXBM(109, 0, 19, 16, image_download_2_bits);
+u8g2.sendBuffer();
 
 }
 
@@ -278,7 +314,6 @@ if (type == WS_EVT_DATA) {
 // Convertir datos a cadena JSON
 String message = String((char *)data).substring(0, len);
 Serial.println("JSON recibido: " + message);
-
 parseJsonString(message);
 sendJson();
 }
@@ -301,11 +336,11 @@ void sendJson() {
 void sendJsonTemp() {
   JsonDocument doc;
   doc["temp"] = tempReadCelcius; // lectura de temperatura
-  doc["setpoint"]=tempSetpointCelcius;  //lectura de setpoint
+  //doc["setpoint"]=tempSetpointCelcius;  //lectura de setpoint
   String jsonStr;
   serializeJson(doc, jsonStr);
   ws.textAll(jsonStr); // Enviar a todos los clientes conectados
-  printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN 
+  //printScreen(tempReadCelcius,tempSetpointCelcius);     //   PRINT SCREEN 
 }
 
 
@@ -324,7 +359,8 @@ void parseJsonString(const String &jsonString) {
   }
 
   if (doc.containsKey("setpoint")) {
-    restartPID();
+    //restartPID();
+    encoder.setCount(doc["setpoint"]);
     tempSetpointCelcius = doc["setpoint"];
     //****************************** */
     //Guardar SETPOINT
@@ -335,20 +371,37 @@ void parseJsonString(const String &jsonString) {
   }
 
   if (doc.containsKey("onState")) {
-    onState = doc["onState"];
+    Serial.println("onState Recibido");
+      if (doc["onState"].as<String>()=="apagado"){
+        apagarPID();
+        printScreen(tempReadCelcius,tempSetpointCelcius);
+        //sendJson();
+        Serial.println("APAGANDO");
+        return;
+      }
+      else if (doc["onState"].as<String>()=="encendido") {
+        encenderPID();
+        printScreen(tempReadCelcius,tempSetpointCelcius);
+        //sendJson();
+        Serial.println("ENCENDIENDO");
+        
+      }
+    
   }
 }
 
 
 void apagarPID() {
-  onState = true;
+  
   myPID.SetMode(MANUAL);
-  //Output = 0;
+  output = 0;
+  onState=false;
 }
 
 void encenderPID() {
-  onState =false;
+  
   myPID.SetMode(AUTOMATIC);
+  onState =true;
 }
 void restartPID(){
   myPID.SetMode(MANUAL);  // Desactiva el PID temporalmente
@@ -359,3 +412,19 @@ void restartPID(){
 void errorPID(){
   error=tempSetpointCelcius-tempReadCelcius;
 } 
+
+
+void printScreenIntro(){
+  u8g2.clearBuffer();
+u8g2.setFontMode(1);
+u8g2.setBitmapMode(1);
+u8g2.setFont(u8g2_font_profont22_tr);
+u8g2.drawStr(40, 38, "3000");
+
+u8g2.drawStr(11, 20, "JUANEITOR");
+
+u8g2.setFont(u8g2_font_t0_16b_tr);
+u8g2.drawStr(17, 60, "TEMP CONTROL");
+
+u8g2.sendBuffer();
+}
